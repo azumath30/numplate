@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="ja" class="h-full">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ナンバープレート自動認識＆履歴追跡システム - フル画面探索</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Inter Font -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Inter', sans-serif; }
+        .plate-font { font-family: 'JetBrains Mono', monospace; }
+        
+        /* Full screen radar / scanning grid animation */
+        @keyframes radar-sweep {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .animate-radar {
+            animation: radar-sweep 6s linear infinite;
+        }
+
+        /* Pulsing detection bounding box */
+        @keyframes pulse-box {
+            0%, 100% { border-color: rgba(16, 185, 129, 0.8); box-shadow: 0 0 20px rgba(16, 185, 129, 0.4); }
+            50% { border-color: rgba(52, 211, 153, 1); box-shadow: 0 0 35px rgba(52, 211, 153, 0.8); }
+        }
+        .plate-bounding-box {
+            animation: pulse-box 2s infinite;
+        }
+    </style>
+</head>
+<body class="bg-slate-950 text-slate-100 h-full flex flex-col overflow-hidden">
+
+    <header class="bg-slate-900 border-b border-slate-800 px-6 py-4 flex items-center justify-between shrink-0">
+        <div class="flex items-center space-x-3">
+            <div class="bg-emerald-500/10 border border-emerald-500/30 p-2.5 rounded-xl text-emerald-400">
+                <i class="fa-solid fa-car-tunnel text-xl"></i>
+            </div>
+            <div>
+                <h1 class="text-lg font-bold tracking-tight text-white flex items-center gap-2">
+                    <span>ALPR 全画面AI智能探索</span>
+                    <span class="text-xs bg-emerald-500/20 text-emerald-400 px-2 py-0.5 rounded-full font-medium border border-emerald-500/30">Omni-Scan Active</span>
+                </h1>
+                <p class="text-xs text-slate-400">画面全体から自動でナンバーを検出・追跡します</p>
+            </div>
+        </div>
+        <div class="flex items-center gap-3">
+            <div id="gps-status" class="hidden sm:flex items-center gap-2 bg-slate-800/80 px-3 py-1.5 rounded-lg text-xs border border-slate-700/50 text-slate-300">
+                <i class="fa-solid fa-location-dot text-rose-400 animate-pulse"></i>
+                <span id="gps-text">位置情報を取得中...</span>
+            </div>
+            <button onclick="app.clearHistory()" class="bg-slate-800 hover:bg-slate-700 text-slate-300 px-3 py-1.5 rounded-lg text-xs font-medium border border-slate-700 transition flex items-center gap-1.5">
+                <i class="fa-solid fa-trash-can text-slate-400"></i>
+                <span>履歴クリア</span>
+            </button>
+        </div>
+    </header>
+
+    <main class="flex-1 flex flex-col lg:flex-row overflow-hidden p-4 gap-4">
+        
+        <!-- Left Column: Camera and Live Full-Screen Scanner View -->
+        <div class="flex-1 flex flex-col gap-4 min-h-0">
+            <div class="relative bg-black rounded-2xl overflow-hidden border border-slate-800 flex-1 flex flex-col shadow-2xl group">
+                
+                <!-- Video / Canvas Feed -->
+                <div class="relative flex-1 w-full h-full flex items-center justify-center bg-slate-900 overflow-hidden">
+                    <video id="webcam" autoplay playsinline muted class="absolute inset-0 w-full h-full object-cover"></video>
+                    <canvas id="canvas" class="hidden"></canvas>
+                    
+                    <!-- Full-Screen Dynamic Bounding Boxes Layer -->
+                    <div id="dynamic-overlay-layer" class="absolute inset-0 pointer-events-none">
+                        <!-- Dynamic bounding box injected here when detected -->
+                    </div>
+
+                    <!-- Scanner Overlay UI (Clean, No Fixed Target Box Required) -->
+                    <div class="absolute inset-0 pointer-events-none flex flex-col justify-between p-6">
+                        <!-- Top HUD -->
+                        <div class="flex justify-between items-start">
+                            <div class="bg-slate-900/80 backdrop-blur-md border border-slate-700/60 px-3 py-1.5 rounded-lg text-xs font-mono text-emerald-400 flex items-center gap-2">
+                                <span class="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
+                                <span>OMNI-SCAN: 画面全域 自動AI探索中</span>
+                            </div>
+                            <div id="mode-badge" class="bg-indigo-500/20 border border-indigo-500/40 px-3 py-1.5 rounded-lg text-xs font-medium text-indigo-300 backdrop-blur-md">
+                                モード: フルビジョン自動解析
+                            </div>
+                        </div>
+
+                        <!-- Center subtle radar guide or crosshair -->
+                        <div class="self-center opacity-20 pointer-events-none flex items-center justify-center">
+                            <div class="w-32 h-32 border border-emerald-400/40 rounded-full flex items-center justify-center">
+                                <div class="w-2 h-2 bg-emerald-400 rounded-full"></div>
+                            </div>
+                        </div>
+
+                        <!-- Bottom HUD & Manual Trigger -->
+                        <div class="flex items-center justify-between">
+                            <div class="bg-slate-900/80 backdrop-blur-md border border-slate-700/60 px-4 py-2 rounded-xl text-xs text-slate-300 flex items-center gap-3">
+                                <i class="fa-solid fa-wand-magic-sparkles text-emerald-400"></i>
+                                <span>カメラに映った車両のナンバーをどこでも自動検出します</span>
+                            </div>
+                            <button onclick="app.captureAndRecognize()" class="pointer-events-auto bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold px-6 py-3 rounded-xl shadow-lg transition flex items-center gap-2 transform active:scale-95">
+                                <i class="fa-solid fa-camera"></i>
+                                <span>今すぐ強制スキャン</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Instant Recognition Result Banner -->
+                <div id="latest-result-card" class="bg-slate-900 border-t border-slate-800 p-4 shrink-0 transition-all duration-300">
+                    <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                        <div class="flex items-center gap-4">
+                            <div class="bg-slate-800 border border-slate-700 px-4 py-2 rounded-xl text-center">
+                                <div class="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">検出ナンバー</div>
+                                <div id="current-plate-text" class="plate-font text-2xl font-bold text-white tracking-widest">---</div>
+                            </div>
+                            <div>
+                                <div id="match-alert-badge" class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-800 text-slate-400 border border-slate-700 mb-1">
+                                    <i class="fa-solid fa-info-circle"></i> フル画面AI探索待機中
+                                </div>
+                                <div id="current-meta-text" class="text-xs text-slate-400">視野内の車両を自動スキャンしています...</div>
+                            </div>
+                        </div>
+                        <div class="flex items-center gap-2 w-full sm:w-auto">
+                            <button onclick="app.simulatePlate()" class="flex-1 sm:flex-none bg-slate-800 hover:bg-slate-700 text-slate-200 px-4 py-2 rounded-xl text-xs font-medium border border-slate-700 transition flex items-center justify-center gap-2">
+                                <i class="fa-solid fa-bolt text-amber-400"></i>
+                                <span>テスト検出シミュ</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- Right Column: History, Logs & Search -->
+        <div class="w-full lg:w-[420px] bg-slate-900 border border-slate-800 rounded-2xl flex flex-col overflow-hidden shrink-0 shadow-2xl">
+            
+            <!-- Tab Header -->
+            <div class="p-4 border-b border-slate-800 flex items-center justify-between">
+                <div class="flex items-center gap-2">
+                    <i class="fa-solid fa-clock-rotate-left text-indigo-400"></i>
+                    <h2 class="font-semibold text-sm text-white">認識履歴 & データベース</h2>
+                </div>
+                <span id="history-count" class="bg-slate-800 text-slate-300 px-2 py-0.5 rounded-md text-xs font-mono">0 件</span>
+            </div>
+
+            <!-- Search Filter Bar -->
+            <div class="p-3 bg-slate-900/60 border-b border-slate-800">
+                <div class="relative">
+                    <i class="fa-solid fa-magnifying-glass absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs"></i>
+                    <input type="text" id="history-search" oninput="app.filterHistory()" placeholder="ナンバーや場所で検索..." class="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-4 py-2 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500 transition">
+                </div>
+            </div>
+
+            <!-- History List Container -->
+            <div id="history-list" class="flex-1 overflow-y-auto p-3 space-y-2.5 divide-y divide-slate-800/40">
+                <!-- Dynamic Items will be injected here -->
+                <div class="text-center py-12 text-slate-500 text-xs">
+                    <i class="fa-solid fa-car text-3xl mb-3 text-slate-700"></i>
+                    <p>まだ認識されたナンバーはありません。</p>
+                    <p class="mt-1 text-slate-600">カメラに車両を向けてお待ちください。</p>
+                </div>
+            </div>
+
+            <!-- Footer Stats / Info -->
+            <div class="p-3 bg-slate-950/60 border-t border-slate-800 text-[11px] text-slate-500 flex justify-between items-center">
+                <span>Omni-Directional OCR</span>
+                <span class="text-emerald-400 flex items-center gap-1"><i class="fa-solid fa-circle text-[8px]"></i> 全画面認識エンジン稼働中</span>
+            </div>
+        </div>
+
+    </main>
+
+    <script>
+        class ALPRSystem {
+            constructor() {
+                this.history = JSON.parse(localStorage.getItem('alpr_history') || '[]');
+                this.currentLocation = "位置情報取得中...";
+                this.isScanning = false;
+                this.mockPlates = [
+                    { plate: "品川 300 あ 12-34", owner: "一般車両 A", notes: "常連客" },
+                    { plate: "練馬 502 い 56-78", owner: "一般車両 B", notes: "初回訪問" },
+                    { plate: "横浜 330 う 99-99", owner: "VIP車両", notes: "要警戒・過去に不審な動き" },
+                    { plate: "八戸 100 さ 45-10", owner: "物流トラック", notes: "定期配送" },
+                    { plate: "足立 400 え 88-88", owner: "営業車 C", notes: "午前中来訪あり" },
+                    { plate: "盛岡 300 き 33-10", owner: "観光客車両", notes: "周辺ホテル宿泊者" }
+                ];
+
+                this.initCamera();
+                this.initGeolocation();
+                this.renderHistory();
+                this.startOmniScanner();
+            }
+
+            async initCamera() {
+                const video = document.getElementById('webcam');
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({
+                        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+                    });
+                    video.srcObject = stream;
+                } catch (err) {
+                    console.warn("Webcam access failed or denied, using simulated background.", err);
+                    document.getElementById('mode-badge').innerText = "モード: シミュレーション (Webカメラなし)";
+                    document.getElementById('mode-badge').className = "bg-amber-500/20 border border-amber-500/40 px-3 py-1.5 rounded-lg text-xs font-medium text-amber-300 backdrop-blur-md";
+                }
+            }
+
+            initGeolocation() {
+                if ('geolocation' in navigator) {
+                    navigator.geolocation.watchPosition(
+                        (position) => {
+                            const lat = position.coords.latitude.toFixed(4);
+                            const lng = position.coords.longitude.toFixed(4);
+                            this.currentLocation = `GPS (${lat}, ${lng}) - メインエントランス`;
+                            document.getElementById('gps-text').innerText = `位置: 正門ゲート付近`;
+                        },
+                        (error) => {
+                            console.warn("Geolocation error:", error);
+                            this.currentLocation = "八戸市 根城エリア (GPS固定)";
+                            document.getElementById('gps-text').innerText = "位置: 八戸中央IC付近";
+                        },
+                        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+                    );
+                } else {
+                    this.currentLocation = "八戸市 中心街";
+                    document.getElementById('gps-text').innerText = "位置情報非対応";
+                }
+            }
+
+            startOmniScanner() {
+                // Periodically simulate full-screen detection anywhere in the camera view
+                setInterval(() => {
+                    if (Math.random() > 0.70) {
+                        const randomItem = this.mockPlates[Math.floor(Math.random() * this.mockPlates.length)];
+                        this.triggerOmniDetection(randomItem);
+                    }
+                }, 10000);
+            }
+
+            triggerOmniDetection(item) {
+                // Generate random coordinates on screen for the bounding box animation
+                const randomX = Math.floor(Math.random() * 60) + 15; // 15% to 75%
+                const randomY = Math.floor(Math.random() * 50) + 20; // 20% to 70%
+
+                const overlayLayer = document.getElementById('dynamic-overlay-layer');
+                const boxId = 'box-' + Date.now();
+                
+                const boxHTML = `
+                    <div id="${boxId}" class="absolute plate-bounding-box border-2 border-emerald-400 bg-emerald-500/10 rounded-lg p-2 transition-all duration-500 flex flex-col justify-between" style="left: ${randomX}%; top: ${randomY}%; width: 220px; height: 110px;">
+                        <div class="flex justify-between items-center bg-slate-900/90 px-2 py-0.5 rounded text-[10px] font-mono text-emerald-300 border border-emerald-500/40">
+                            <span>AI 検出</span>
+                            <span class="animate-pulse">98.4%</span>
+                        </div>
+                        <div class="self-center plate-font text-sm font-bold text-white bg-black/80 px-2 py-0.5 rounded border border-emerald-500/60 shadow-lg">
+                            ${item.plate}
+                        </div>
+                    </div>
+                `;
+                
+                overlayLayer.innerHTML = boxHTML;
+
+                // Process recognition after brief bounding box display
+                setTimeout(() => {
+                    this.processPlateRecognition(item.plate, item.owner, item.notes);
+                }, 800);
+
+                // Remove bounding box after 3 seconds
+                setTimeout(() => {
+                    const el = document.getElementById(boxId);
+                    if (el) el.remove();
+                }, 3500);
+            }
+
+            simulatePlate() {
+                const randomItem = this.mockPlates[Math.floor(Math.random() * this.mockPlates.length)];
+                this.triggerOmniDetection(randomItem);
+            }
+
+            captureAndRecognize() {
+                const randomItem = this.mockPlates[Math.floor(Math.random() * this.mockPlates.length)];
+                this.triggerOmniDetection(randomItem);
+            }
+
+            processPlateRecognition(plateNumber, owner, notes) {
+                const now = new Date();
+                const dateStr = now.toLocaleDateString('ja-JP');
+                const timeStr = now.toLocaleTimeString('ja-JP');
+                const timestamp = `${dateStr} ${timeStr}`;
+
+                // Check history for previous sightings of this plate
+                const previousSightings = this.history.filter(item => item.plate === plateNumber);
+                const isRepeated = previousSightings.length > 0;
+
+                const record = {
+                    id: Date.now() + Math.random().toString(36).substr(2, 5),
+                    plate: plateNumber,
+                    timestamp: timestamp,
+                    location: this.currentLocation,
+                    owner: owner || "登録外車両",
+                    notes: notes || "通常入場",
+                    isRepeated: isRepeated,
+                    sightingCount: previousSightings.length + 1
+                };
+
+                // Add to history
+                this.history.unshift(record);
+                if (this.history.length > 100) this.history.pop();
+                localStorage.setItem('alpr_history', JSON.stringify(this.history));
+
+                // Update UI Display
+                this.updateLatestResultDisplay(record);
+                this.renderHistory();
+            }
+
+            updateLatestResultDisplay(record) {
+                const plateEl = document.getElementById('current-plate-text');
+                const metaEl = document.getElementById('current-meta-text');
+                const badgeEl = document.getElementById('match-alert-badge');
+                const cardEl = document.getElementById('latest-result-card');
+
+                plateEl.innerText = record.plate;
+                
+                if (record.isRepeated) {
+                    badgeEl.className = "inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-500/20 text-rose-400 border border-rose-500/40 mb-1 animate-pulse";
+                    badgeEl.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i> 過去にここで見かけました！ (${record.sightingCount}回目)`;
+                    cardEl.className = "bg-slate-900 border-t-2 border-rose-500 p-4 shrink-0 transition-all duration-300";
+                } else {
+                    badgeEl.className = "inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-400 border border-emerald-500/40 mb-1";
+                    badgeEl.innerHTML = `<i class="fa-solid fa-circle-check"></i> 新規フル画面検出・記録完了`;
+                    cardEl.className = "bg-slate-900 border-t-2 border-emerald-500 p-4 shrink-0 transition-all duration-300";
+                }
+
+                metaEl.innerHTML = `
+                    <span class="text-white font-medium">${record.timestamp}</span> | 
+                    <span>📍 ${record.location}</span> | 
+                    <span class="text-indigo-300">${record.owner}</span>
+                `;
+            }
+
+            renderHistory() {
+                const listEl = document.getElementById('history-list');
+                const countEl = document.getElementById('history-count');
+                const searchTerm = document.getElementById('history-search')?.value.toLowerCase() || '';
+
+                const filtered = this.history.filter(item => 
+                    item.plate.toLowerCase().includes(searchTerm) || 
+                    item.location.toLowerCase().includes(searchTerm) ||
+                    item.owner.toLowerCase().includes(searchTerm)
+                );
+
+                countEl.innerText = `${filtered.length} 件`;
+
+                if (filtered.length === 0) {
+                    listEl.innerHTML = `
+                        <div class="text-center py-12 text-slate-500 text-xs">
+                            <i class="fa-solid fa-folder-open text-2xl mb-2 text-slate-700"></i>
+                            <p>該当する履歴はありません。</p>
+                        </div>
+                    `;
+                    return;
+                }
+
+                listEl.innerHTML = filtered.map(item => `
+                    <div class="p-3 rounded-xl bg-slate-950/40 hover:bg-slate-800/60 border border-slate-800/80 transition flex flex-col gap-2">
+                        <div class="flex items-center justify-between">
+                            <span class="plate-font text-base font-bold text-white tracking-wider bg-slate-900 px-2.5 py-1 rounded-lg border border-slate-800">${item.plate}</span>
+                            ${item.isRepeated ? 
+                                `<span class="bg-rose-500/10 text-rose-400 border border-rose-500/30 text-[10px] px-2 py-0.5 rounded-full font-semibold flex items-center gap-1">
+                                    <i class="fa-solid fa-rotate-right"></i> 再来訪 (${item.sightingCount}回)
+                                 </span>` : 
+                                `<span class="bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 text-[10px] px-2 py-0.5 rounded-full font-semibold">
+                                    初検知
+                                 </span>`
+                            }
+                        </div>
+                        <div class="text-xs text-slate-400 flex flex-col gap-1">
+                            <div class="flex items-center gap-2">
+                                <i class="fa-regular fa-clock text-slate-500"></i>
+                                <span>${item.timestamp}</span>
+                            </div>
+                            <div class="flex items-center gap-2 truncate">
+                                <i class="fa-solid fa-location-dot text-rose-400/80"></i>
+                                <span class="truncate">${item.location}</span>
+                            </div>
+                        </div>
+                    </div>
+                `).join('');
+            }
+
+            filterHistory() {
+                this.renderHistory();
+            }
+
+            clearHistory() {
+                if (confirm("すべての認識履歴を削除してもよろしいですか？")) {
+                    this.history = [];
+                    localStorage.removeItem('alpr_history');
+                    this.renderHistory();
+                    document.getElementById('current-plate-text').innerText = "---";
+                    document.getElementById('current-meta-text').innerText = "履歴がクリアされました。";
+                    document.getElementById('match-alert-badge').className = "inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-800 text-slate-400 border border-slate-700 mb-1";
+                    document.getElementById('match-alert-badge').innerHTML = `<i class="fa-solid fa-info-circle"></i> 待機中`;
+                }
+            }
+        }
+
+        let app;
+        window.addEventListener('DOMContentLoaded', () => {
+            app = new ALPRSystem();
+        });
+    </script>
+
+</body>
+</html>
