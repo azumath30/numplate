@@ -68,7 +68,7 @@
                 
                 <!-- Video / Canvas Feed -->
                 <div class="relative flex-1 w-full h-full flex items-center justify-center bg-slate-900 overflow-hidden">
-                    <video id="webcam" autoplay playsinline muted class="absolute inset-0 w-full h-full object-cover"></video>
+                    <video id="webcam" autoplay playsinline webkit-playsinline muted class="absolute inset-0 w-full h-full object-cover"></video>
                     <canvas id="canvas" class="hidden"></canvas>
                     
                     <!-- Full-Screen Dynamic Bounding Boxes Layer -->
@@ -199,13 +199,44 @@
 
             async initCamera() {
                 const video = document.getElementById('webcam');
-                try {
-                    const stream = await navigator.mediaDevices.getUserMedia({
-                        video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
-                    });
+                
+                // Ensure iOS specific video properties are explicitly applied
+                video.setAttribute('autoplay', '');
+                video.setAttribute('playsinline', '');
+                video.setAttribute('webkit-playsinline', '');
+                video.muted = true;
+
+                // Stop any existing tracks if restarting
+                if (video.srcObject) {
+                    video.srcObject.getTracks().forEach(track => track.stop());
+                }
+
+                // Try multiple constraints for iPhone Safari compatibility
+                const constraintsList = [
+                    { video: { facingMode: { exact: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } } },
+                    { video: { facingMode: 'environment' } },
+                    { video: true }
+                ];
+
+                let stream = null;
+                for (const constraints of constraintsList) {
+                    try {
+                        stream = await navigator.mediaDevices.getUserMedia(constraints);
+                        break;
+                    } catch (e) {
+                        console.warn("Constraint attempt failed:", constraints, e);
+                    }
+                }
+
+                if (stream) {
                     video.srcObject = stream;
-                } catch (err) {
-                    console.warn("Webcam access failed or denied, using simulated background.", err);
+                    try {
+                        await video.play();
+                    } catch (playErr) {
+                        console.warn("Autoplay was prevented or restricted:", playErr);
+                    }
+                } else {
+                    console.warn("Webcam access failed or denied on iOS/Device, using simulated background.");
                     document.getElementById('mode-badge').innerText = "モード: シミュレーション (Webカメラなし)";
                     document.getElementById('mode-badge').className = "bg-amber-500/20 border border-amber-500/40 px-3 py-1.5 rounded-lg text-xs font-medium text-amber-300 backdrop-blur-md";
                 }
